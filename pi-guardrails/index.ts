@@ -20,7 +20,7 @@ type GuardrailsConfig = {
   defaultMode: Mode;
   shortcut: string;
   allowUnsafeProjectOverrides: boolean;
-  plan: { activeTools: string[]; allowedBashPatterns: string[] };
+  plan: { allowedBashPatterns: string[] };
   hitl: { dangerousBashPatterns: string[] };
   afk: { blockedBashPatterns: string[] };
 };
@@ -37,7 +37,6 @@ function processState(): ProcessState {
   return (root[PROCESS_STATE_KEY] ??= {});
 }
 
-const DEFAULT_PLAN_TOOLS = ["read", "grep", "find", "ls", "bash"];
 const DEFAULT_PLAN_ALLOWED = [
   String.raw`^\s*pwd\s*$`,
   String.raw`^\s*ls(\s|$)`,
@@ -106,7 +105,6 @@ function mergeConfig(base: GuardrailsConfig, raw: any, source: string): Guardrai
     shortcut: typeof g.shortcut === "string" && g.shortcut ? g.shortcut : base.shortcut,
     allowUnsafeProjectOverrides: typeof g.allowUnsafeProjectOverrides === "boolean" ? g.allowUnsafeProjectOverrides : base.allowUnsafeProjectOverrides,
     plan: {
-      activeTools: pickStrings(g.plan?.activeTools, base.plan.activeTools, `${source}: guardrails.plan.activeTools`),
       allowedBashPatterns: pickStrings(g.plan?.allowedBashPatterns, base.plan.allowedBashPatterns, `${source}: guardrails.plan.allowedBashPatterns`),
     },
     hitl: {
@@ -123,7 +121,7 @@ function loadConfig(cwd: string): GuardrailsConfig {
     defaultMode: "PLAN",
     shortcut: "ctrl+shift+m",
     allowUnsafeProjectOverrides: false,
-    plan: { activeTools: DEFAULT_PLAN_TOOLS, allowedBashPatterns: DEFAULT_PLAN_ALLOWED },
+    plan: { allowedBashPatterns: DEFAULT_PLAN_ALLOWED },
     hitl: { dangerousBashPatterns: DEFAULT_HITL_DANGEROUS },
     afk: { blockedBashPatterns: SAFETY_FLOOR },
   };
@@ -188,7 +186,6 @@ export default function(pi: ExtensionAPI) {
 
   let config: GuardrailsConfig | undefined = loadConfig(process.cwd());
   let mode: Mode = parseMode(pi.getFlag("guardrails")) ?? config.defaultMode ?? "PLAN";
-  let planSnapshot: string[] | undefined;
   let planAllowed: RegExp[] = [];
   let hitlDangerous: RegExp[] = [];
   let afkBlocked: RegExp[] = [];
@@ -208,30 +205,14 @@ export default function(pi: ExtensionAPI) {
     ctx.ui.setStatus("guardrails", `${color}Mode: ${mode}\x1b[0m`);
   }
 
-  function enterPlan() {
-    if (!config || planSnapshot) return;
-    planSnapshot = pi.getActiveTools();
-    const available = new Set(pi.getAllTools().map((tool) => tool.name));
-    pi.setActiveTools(config.plan.activeTools.filter((name) => available.has(name)));
-  }
-
-  function leavePlan() {
-    if (!planSnapshot) return;
-    pi.setActiveTools(planSnapshot);
-    planSnapshot = undefined;
-  }
-
   async function setMode(next: Mode, ctx?: ExtensionContext, notify = true) {
     if (next === mode) {
       processState().mode = mode;
       setStatus(ctx);
       return;
     }
-    const wasPlan = mode === "PLAN";
     mode = next;
     processState().mode = mode;
-    if (wasPlan && next !== "PLAN") leavePlan();
-    if (next === "PLAN") enterPlan();
     setStatus(ctx);
     if (notify) ctx?.ui.notify(`Mode: ${mode}`, "info");
   }
@@ -254,15 +235,12 @@ export default function(pi: ExtensionAPI) {
       mode = processState().mode ?? flagMode ?? config.defaultMode ?? "PLAN";
     }
     processState().mode = mode;
-    planSnapshot = undefined;
-    if (mode === "PLAN") enterPlan();
     setStatus(ctx);
     if (event.reason === "startup") ctx.ui.notify(`Mode: ${mode}`, "info");
   });
 
   pi.on("session_shutdown", () => {
     processState().mode = mode;
-    if (mode === "PLAN") leavePlan();
   });
 
   const shortcut = normalizeShortcut(config.shortcut);

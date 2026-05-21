@@ -4,14 +4,6 @@
     "defaultMode": "PLAN",
     "allowUnsafeProjectOverrides": false,
     "plan": {
-      "activeTools": [
-        "read",
-        "grep",
-        "find",
-        "ls",
-        "bash",
-        "pi_scout"
-      ],
       "allowedBashPatterns": [
         "^\\s*pwd\\s*$",
         "^\\s*ls(\\s|$)",
