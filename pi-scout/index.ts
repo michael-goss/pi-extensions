@@ -18,12 +18,13 @@ interface PiScoutSettings {
   outputDir?: string;
   outputFilePrefix?: string;
   tools?: string[];
+  maxToolCalls?: number;
 }
 
 const SCOUT_SYSTEM_PROMPT = `You are pi_scout, a read-only codebase reconnaissance subagent launched by a parent coding agent.
-Your job is reconnaissance, not implementation. Find the minimum local code context the parent agent needs to act safely. Use targeted search and selective reads to produce a compact, evidence-backed handoff.
+Your job is reconnaissance, not implementation, analysis ownership, or final-answer writing. Find the minimum local code context the parent agent needs to act safely. Use targeted search and selective reads to produce a compact, evidence-backed handoff for the parent to reason over.
 You may inspect files and run non-destructive read-only commands. Do not edit files, create files, install dependencies, start long-running services, or make product/design decisions. Prefer read, grep, find, and ls over bash; use bash only for safe inspection commands when the dedicated tools are insufficient.
-Return concise findings with exact file paths and line ranges for code claims. If evidence is incomplete, say so explicitly.`;
+Return concise findings with exact file paths and line ranges for code claims. If the task is too broad, deliberately stop after mapping the most relevant seams and recommend follow-up scout slices. If evidence is incomplete, say so explicitly.`;
 
 const SCOUT_TASK_TEMPLATE = `Problem description:
 {{task}}
@@ -34,6 +35,9 @@ Goal to reach:
 {{scope}}
 
 Reconnaissance rules:
+- You are a scout, not the lead agent: do not try to fully solve the user request; gather evidence and identify seams so the parent can decide.
+- Treat this as one bounded slice. Prefer stopping early with useful next-scout recommendations over exhaustive exploration.
+- Hard budget: at most {{maxToolCalls}} tool calls. If you are near the budget, stop and summarize what is known/unknown.
 - Start with targeted grep/find/ls to map the area before reading files.
 - Read only the most relevant files or line ranges; avoid whole-file dumps unless necessary.
 - Follow references far enough to explain the relevant architecture, data flow, or failure path.
@@ -54,7 +58,7 @@ Output exactly this Markdown structure:
 How the relevant pieces connect. Mention important entry points, call chains, data flow, or state transitions.
 
 ## Start Here
-The first file/symbol the parent should inspect next and why.
+The first file/symbol the parent should inspect next and why. Include suggested follow-up scout slices if more exploration is needed.
 
 ## Risks and Open Questions
 Anything uncertain, contradictory, missing from evidence, or requiring user/product decision.`;
@@ -116,12 +120,13 @@ function summarizeToolArgs(toolName: string, args: any): string {
   return summary.length > 120 ? `${summary.slice(0, 117)}...` : summary;
 }
 
-function makePrompt(task: string, goal?: string, scope?: string[]): string {
+function makePrompt(task: string, goal?: string, scope?: string[], maxToolCalls = 50): string {
   const scopeText = scope?.length ? `Suggested scope:\n${scope.map((s) => `- ${s}`).join("\n")}` : "";
   return SCOUT_TASK_TEMPLATE
     .replaceAll("{{task}}", task)
     .replaceAll("{{goal}}", goal || "Find the minimum local code context needed for the parent agent to act safely.")
-    .replaceAll("{{scope}}", scopeText);
+    .replaceAll("{{scope}}", scopeText)
+    .replaceAll("{{maxToolCalls}}", String(maxToolCalls));
 }
 
 export default function(pi: ExtensionAPI) {
@@ -129,16 +134,17 @@ export default function(pi: ExtensionAPI) {
     name: "pi_scout",
     label: "Pi Scout",
     description:
-      "Perform broad, read-only codebase reconnaissance in a separate fresh-context agent session. Use this before exploring unfamiliar areas, tracing cross-file flows, comparing implementations, or when the task would require multiple searches/file reads. Returns a compact evidence-backed handoff for the parent agent.",
+      "Perform bounded, read-only codebase reconnaissance in a separate fresh-context agent session. Use for exploration/evidence gathering before the parent agent reasons or decides. Prefer multiple narrow scout calls over one broad catch-all. Returns a compact handoff, not a final answer.",
     promptSnippet:
-      "Delegate broad codebase reconnaissance to a read-only scout and return compact findings.",
+      "Delegate a bounded reconnaissance slice to a read-only scout; parent remains responsible for synthesis and decisions.",
     promptGuidelines: [
-      "Use pi_scout first for broad or unfamiliar codebase exploration, cross-file tracing, architecture discovery, bug investigation, or comparing implementations.",
+      "Use pi_scout for bounded reconnaissance slices: mapping an unfamiliar area, tracing a specific cross-file flow, comparing implementations, or collecting evidence before parent reasoning.",
+      "For broad user questions, split exploration into multiple focused pi_scout calls as needed; do not delegate the whole problem/decision to one scout.",
       "Use pi_scout when you expect to need repository-wide search, more than three file reads, or context that should be summarized before the parent agent acts.",
       "Do not manually grep/read many files in the parent session before using pi_scout; delegate reconnaissance early, then continue from the scout artifact.",
       "Do not use pi_scout for a single known file, a narrow symbol lookup, or a quick directory listing where read/grep/find/ls is sufficient.",
       "When calling pi_scout, include a specific task, a concrete goal, and any known scope paths, modules, symbols, or files.",
-      "Wait for the pi_scout result before making conclusions or editing code.",
+      "Wait for the pi_scout result, then the parent agent must inspect/synthesize/decide; do not simply relay the scout report as the final answer.",
     ],
     parameters: Type.Object({
       task: Type.String({ description: "Problem description and specific reconnaissance request for the scout." }),
@@ -148,6 +154,7 @@ export default function(pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const settings = loadSettings(ctx.cwd);
+      const maxToolCalls = settings.maxToolCalls ?? 50;
       const outputDir = resolvePath(ctx.cwd, params.outputDir || settings.outputDir);
       fs.mkdirSync(outputDir, { recursive: true });
       const fileName = `${settings.outputFilePrefix || "scout"}-${Date.now()}-${safeSlug(params.task)}.md`;
@@ -183,6 +190,7 @@ export default function(pi: ExtensionAPI) {
 
       let assistantText = "";
       const toolTimeline: string[] = [];
+      let budgetAbort = false;
       const emitToolTimeline = () => {
         if (!onUpdate || toolTimeline.length === 0) return;
         onUpdate({
@@ -199,6 +207,10 @@ export default function(pi: ExtensionAPI) {
           const summary = summarizeToolArgs(event.toolName, event.args);
           toolTimeline.push(`${n}. ${event.toolName}${summary ? ` — ${summary}` : ""}`);
           emitToolTimeline();
+          if (n >= maxToolCalls && !budgetAbort) {
+            budgetAbort = true;
+            session.abort();
+          }
         }
       });
 
@@ -207,7 +219,9 @@ export default function(pi: ExtensionAPI) {
         const abort = () => void session.abort();
         signal?.addEventListener("abort", abort, { once: true });
         try {
-          await session.prompt(makePrompt(params.task, params.goal, params.scope), { source: "extension" });
+          await session.prompt(makePrompt(params.task, params.goal, params.scope, maxToolCalls), { source: "extension" });
+        } catch (error) {
+          if (!budgetAbort) throw error;
         } finally {
           signal?.removeEventListener("abort", abort);
         }
@@ -216,7 +230,10 @@ export default function(pi: ExtensionAPI) {
         session.dispose();
       }
 
-      const artifact = assistantText.trim() || "# Scout Findings\n\nScout completed without text output.";
+      const budgetNote = budgetAbort
+        ? `\n\n> Scout stopped after reaching the configured maxToolCalls budget (${maxToolCalls}). Treat findings as partial and launch a narrower follow-up scout if needed.`
+        : "";
+      const artifact = (assistantText.trim() || "# Scout Findings\n\nScout completed without text output.") + budgetNote;
       fs.writeFileSync(outputPath, artifact + "\n", "utf8");
 
       return {
