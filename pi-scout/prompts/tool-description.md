@@ -1,1 +1,0 @@
-Launch a fresh-context, read-only scout subagent for local codebase reconnaissance. Use when exploration would require broad search, more than a few file reads, or when compact handoff context would protect the parent session context window.

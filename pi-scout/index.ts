@@ -20,24 +20,44 @@ interface PiScoutSettings {
   tools?: string[];
 }
 
-const extensionDir = __dirname;
-const promptsDir = path.join(extensionDir, "prompts");
+const SCOUT_SYSTEM_PROMPT = `You are pi_scout, a read-only codebase reconnaissance subagent launched by a parent coding agent.
+Your job is reconnaissance, not implementation. Find the minimum local code context the parent agent needs to act safely. Use targeted search and selective reads to produce a compact, evidence-backed handoff.
+You may inspect files and run non-destructive read-only commands. Do not edit files, create files, install dependencies, start long-running services, or make product/design decisions. Prefer read, grep, find, and ls over bash; use bash only for safe inspection commands when the dedicated tools are insufficient.
+Return concise findings with exact file paths and line ranges for code claims. If evidence is incomplete, say so explicitly.`;
 
-function readPrompt(fileName: string, fallback: string): string {
-  try {
-    return fs.readFileSync(path.join(promptsDir, fileName), "utf8").trim();
-  } catch {
-    return fallback.trim();
-  }
-}
+const SCOUT_TASK_TEMPLATE = `Problem description:
+{{task}}
 
-function readGuidelines(fileName: string, fallback: string[]): string[] {
-  const text = readPrompt(fileName, fallback.join("\n"));
-  return text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith("#"));
-}
+Goal to reach:
+{{goal}}
+
+{{scope}}
+
+Reconnaissance rules:
+- Start with targeted grep/find/ls to map the area before reading files.
+- Read only the most relevant files or line ranges; avoid whole-file dumps unless necessary.
+- Follow references far enough to explain the relevant architecture, data flow, or failure path.
+- Cite exact file paths and line ranges for every substantive code claim.
+- Keep the handoff compact; optimize for what the parent agent should know next.
+- Do not edit files. Do not run destructive commands. Use bash only for non-interactive read-only inspection.
+
+Output exactly this Markdown structure:
+# Scout Findings
+
+## Files Inspected
+- \`path\` lines X-Y — why it matters
+
+## Key Findings
+- Concise evidence-backed findings with file/line citations.
+
+## Architecture / Flow
+How the relevant pieces connect. Mention important entry points, call chains, data flow, or state transitions.
+
+## Start Here
+The first file/symbol the parent should inspect next and why.
+
+## Risks and Open Questions
+Anything uncertain, contradictory, missing from evidence, or requiring user/product decision.`;
 
 function readJson(file: string): any {
   try {
@@ -97,33 +117,29 @@ function summarizeToolArgs(toolName: string, args: any): string {
 }
 
 function makePrompt(task: string, goal?: string, scope?: string[]): string {
-  const template = readPrompt(
-    "scout-task-template.md",
-    "Problem description:\n{{task}}\n\nGoal to reach:\n{{goal}}\n\n{{scope}}",
-  );
   const scopeText = scope?.length ? `Suggested scope:\n${scope.map((s) => `- ${s}`).join("\n")}` : "";
-  return template
+  return SCOUT_TASK_TEMPLATE
     .replaceAll("{{task}}", task)
     .replaceAll("{{goal}}", goal || "Find the minimum local code context needed for the parent agent to act safely.")
     .replaceAll("{{scope}}", scopeText);
 }
 
-export default function (pi: ExtensionAPI) {
+export default function(pi: ExtensionAPI) {
   pi.registerTool({
     name: "pi_scout",
     label: "Pi Scout",
-    description: readPrompt(
-      "tool-description.md",
-      "Launch a fresh-context, read-only scout subagent for local codebase reconnaissance.",
-    ),
-    promptSnippet: readPrompt(
-      "tool-snippet.md",
-      "Launch a fresh-context read-only scout subagent and return compact findings.",
-    ),
-    promptGuidelines: readGuidelines("tool-guidelines.md", [
-      "Use pi_scout before broad/open-ended codebase exploration.",
-      "When calling pi_scout, provide a concrete problem description, goal, and any known scope.",
-    ]),
+    description:
+      "Perform broad, read-only codebase reconnaissance in a separate fresh-context agent session. Use this before exploring unfamiliar areas, tracing cross-file flows, comparing implementations, or when the task would require multiple searches/file reads. Returns a compact evidence-backed handoff for the parent agent.",
+    promptSnippet:
+      "Delegate broad codebase reconnaissance to a read-only scout and return compact findings.",
+    promptGuidelines: [
+      "Use pi_scout first for broad or unfamiliar codebase exploration, cross-file tracing, architecture discovery, bug investigation, or comparing implementations.",
+      "Use pi_scout when you expect to need repository-wide search, more than three file reads, or context that should be summarized before the parent agent acts.",
+      "Do not manually grep/read many files in the parent session before using pi_scout; delegate reconnaissance early, then continue from the scout artifact.",
+      "Do not use pi_scout for a single known file, a narrow symbol lookup, or a quick directory listing where read/grep/find/ls is sufficient.",
+      "When calling pi_scout, include a specific task, a concrete goal, and any known scope paths, modules, symbols, or files.",
+      "Wait for the pi_scout result before making conclusions or editing code.",
+    ],
     parameters: Type.Object({
       task: Type.String({ description: "Problem description and specific reconnaissance request for the scout." }),
       goal: Type.Optional(Type.String({ description: "Concrete goal the scout should reach before returning." })),
@@ -149,10 +165,7 @@ export default function (pi: ExtensionAPI) {
         noExtensions: true,
         noSkills: true,
         noPromptTemplates: true,
-        systemPromptOverride: () => readPrompt(
-          "scout-system.md",
-          "You are pi-scout, a read-only codebase reconnaissance subagent. Return compact, evidence-backed handoff context only.",
-        ),
+        systemPromptOverride: () => SCOUT_SYSTEM_PROMPT,
         appendSystemPromptOverride: () => [],
       });
       await loader.reload();
@@ -216,13 +229,5 @@ export default function (pi: ExtensionAPI) {
         details: { outputPath, bytes: Buffer.byteLength(artifact, "utf8") },
       };
     },
-  });
-
-  pi.on("before_agent_start", async (event) => {
-    const injection = readPrompt(
-      "parent-turn-injection.md",
-      "## Pi Scout context hygiene\nUse `pi_scout` before broad/open-ended local codebase exploration.",
-    );
-    return { systemPrompt: `${event.systemPrompt}\n\n${injection}` };
   });
 }
