@@ -1,0 +1,49 @@
+{
+  "guardrails": {
+    "shortcut": "f2",
+    "defaultMode": "PLAN",
+    "allowUnsafeProjectOverrides": false,
+    "plan": {
+      "activeTools": [
+        "read",
+        "grep",
+        "find",
+        "ls",
+        "bash",
+        "pi_scout"
+      ],
+      "allowedBashPatterns": [
+        "^\\s*pwd\\s*$",
+        "^\\s*ls(\\s|$)",
+        "^\\s*find\\s+",
+        "^\\s*rg(\\s|$)",
+        "^\\s*grep(\\s|$)",
+        "^\\s*git\\s+(status|diff|log|show|branch|remote|rev-parse|ls-files)(\\s|$)",
+        "^\\s*(wc|head|tail|file|du|df|which)(\\s|$)",
+        "^\\s*([\\w.-]+\\s+)?(node|npm|pnpm|yarn|bun|deno|python3?|pip3?|ruby|go|rustc|cargo|java|javac|mvn|gradle|gcc|g\\+\\+|clang|make|cmake)\\s+(--?v(ersion)?|-V)\\s*$"
+      ]
+    },
+    "hitl": {
+      "dangerousBashPatterns": [
+        "\\brm\\s+(-[\\w-]*[rf][\\w-]*|--recursive|--force)",
+        "\\bsudo\\b",
+        "\\b(chmod|chown)\\s+(-R\\s+)?",
+        "\\b(curl|wget)\\b.*\\|\\s*(sh|bash|zsh|fish)\\b",
+        "\\b(dd|mkfs|diskutil|mount|umount)\\b",
+        "\\b(npm|pnpm|yarn|bun)\\s+(publish|add|install|remove|update)\\b",
+        "\\b(git\\s+push|git\\s+reset\\s+--hard|git\\s+clean\\s+-)\\b"
+      ]
+    },
+    "afk": {
+      "blockedBashPatterns": [
+        "\\brm\\s+-[\\w-]*rf[\\w-]*\\s+(/|~|\\$HOME)(\\s|$)",
+        "\\bdd\\s+.*\\bof=/dev/(disk|rdisk|sd|hd)",
+        "\\bmkfs(\\.|\\s)",
+        "\\b(:\\(\\)\\s*\\{\\s*:\\|:\\s*&\\s*\\}\\s*;\\s*:)",
+        "\\b(shutdown|reboot|halt)\\b",
+        "\\bchmod\\s+-R\\s+777\\s+(/|~|\\$HOME)(\\s|$)",
+        "\\bchown\\s+-R\\s+[^\\s]+\\s+(/|~|\\$HOME)(\\s|$)"
+      ]
+    }
+  }
+}
