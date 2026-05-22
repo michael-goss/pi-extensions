@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import {
   AuthStorage,
   createAgentSession,
@@ -25,6 +26,8 @@ const SCOUT_SYSTEM_PROMPT = `You are pi_scout, a read-only codebase reconnaissan
 Your job is reconnaissance, not implementation, analysis ownership, or final-answer writing. Find the minimum local code context the parent agent needs to act safely. Use targeted search and selective reads to produce a compact, evidence-backed handoff for the parent to reason over.
 You may inspect files and run non-destructive read-only commands. Do not edit files, create files, install dependencies, start long-running services, or make product/design decisions. Prefer read, grep, find, and ls over bash; use bash only for safe inspection commands when the dedicated tools are insufficient.
 Return concise findings with exact file paths and line ranges for code claims. If the task is too broad, deliberately stop after mapping the most relevant seams and recommend follow-up scout slices. If evidence is incomplete, say so explicitly.`;
+
+const TOGGLE_HINT = "Ctrl+O toggles details.";
 
 const SCOUT_TASK_TEMPLATE = `Problem description:
 {{task}}
@@ -91,6 +94,23 @@ function safeSlug(text: string): string {
     .slice(0, 48) || "scout";
 }
 
+function shortSummary(text: string, max = 80): string {
+  const summary = text.replace(/\s+/g, " ").trim();
+  return summary.length > max ? `${summary.slice(0, max - 3)}...` : summary;
+}
+
+function formatTokens(input: number, output: number): string {
+  return `tokens in/out: ${input.toLocaleString()}/${output.toLocaleString()}`;
+}
+
+function messageUsage(message: any): { input: number; output: number } | undefined {
+  const usage = message?.usage;
+  if (!usage || typeof usage !== "object") return undefined;
+  return {
+    input: Number(usage.input || 0) + Number(usage.cacheRead || 0) + Number(usage.cacheWrite || 0),
+    output: Number(usage.output || 0),
+  };
+}
 
 function summarizeToolArgs(toolName: string, args: any): string {
   if (!args || typeof args !== "object") return "";
@@ -134,14 +154,14 @@ export default function(pi: ExtensionAPI) {
     name: "pi_scout",
     label: "Pi Scout",
     description:
-      "Perform bounded, read-only codebase reconnaissance in a separate fresh-context agent session. Use for exploration/evidence gathering before the parent agent reasons or decides. Prefer multiple narrow scout calls over one broad catch-all. Returns a compact handoff, not a final answer.",
+      "Perform bounded, read-only codebase reconnaissance in a separate fresh-context agent session. Use whenever exploration/evidence gathering would help before the parent agent reasons or decides, including later in long discussions. Prefer multiple narrow scout calls over one broad catch-all. Returns a compact handoff, not a final answer.",
     promptSnippet:
-      "Delegate a bounded reconnaissance slice to a read-only scout; parent remains responsible for synthesis and decisions.",
+      "Delegate bounded read-only reconnaissance to a fresh-context scout at any point in the session; parent remains responsible for synthesis and decisions.",
     promptGuidelines: [
       "Use pi_scout for bounded reconnaissance slices: mapping an unfamiliar area, tracing a specific cross-file flow, comparing implementations, or collecting evidence before parent reasoning.",
       "For broad user questions, split exploration into multiple focused pi_scout calls as needed; do not delegate the whole problem/decision to one scout.",
       "Use pi_scout when you expect to need repository-wide search, more than three file reads, or context that should be summarized before the parent agent acts.",
-      "Do not manually grep/read many files in the parent session before using pi_scout; delegate reconnaissance early, then continue from the scout artifact.",
+      "Use pi_scout throughout the session whenever fresh bounded reconnaissance would help; do not manually grep/read many files in the parent session before delegating.",
       "Do not use pi_scout for a single known file, a narrow symbol lookup, or a quick directory listing where read/grep/find/ls is sufficient.",
       "When calling pi_scout, include a specific task, a concrete goal, and any known scope paths, modules, symbols, or files.",
       "Wait for the pi_scout result, then the parent agent must inspect/synthesize/decide; do not simply relay the scout report as the final answer.",
@@ -152,6 +172,39 @@ export default function(pi: ExtensionAPI) {
       scope: Type.Optional(Type.Array(Type.String(), { description: "Optional paths, modules, symbols, or areas to prioritize." })),
       outputDir: Type.Optional(Type.String({ description: "Override artifact directory. Relative paths resolve against cwd." })),
     }),
+    renderCall(args, theme, _context) {
+      const task = typeof args.task === "string" ? shortSummary(args.task) : "reconnaissance";
+      return new Text(
+        `${theme.fg("toolTitle", theme.bold("Starting Pi-Scout"))}${theme.fg("muted", ` — ${task}`)}`,
+        0,
+        0,
+      );
+    },
+    renderResult(result, { expanded, isPartial }, theme, _context) {
+      const details = result.details as any;
+      const task = details?.taskSummary ? ` — ${details.taskSummary}` : "";
+      const tokens = details?.tokens ? `tokens in/out: ${Number(details.tokens.input || 0).toLocaleString()}/${Number(details.tokens.output || 0).toLocaleString()}` : "";
+      const toolCount = typeof details?.toolCount === "number" ? `${details.toolCount} tool use${details.toolCount === 1 ? "" : "s"}` : "";
+      const summary = [toolCount, tokens].filter(Boolean).join(", ");
+      const status = isPartial ? "running" : "completed";
+      const title = `${theme.fg("toolTitle", theme.bold(`Exploration with Pi-Scout ${status}`))}${theme.fg("muted", task)}${summary ? theme.fg("dim", ` (${summary})`) : ""}`;
+
+      const content = result.content?.[0];
+      const body = content?.type === "text" ? content.text.split("\n").slice(1).join("\n") : "";
+      const timeline = Array.isArray(details?.toolTimeline) ? details.toolTimeline.join("\n") : "";
+
+      const shortcutHint = theme.fg("dim", TOGGLE_HINT);
+
+      if (!expanded) {
+        // Partial updates should still show nested scout activity while the parent tool is collapsed;
+        // otherwise the TUI only shows the outer pi_scout row and progress appears to be hidden.
+        if (isPartial && timeline) return new Text(`${title}\n${theme.fg("muted", timeline)}\n${shortcutHint}`, 0, 0);
+        return new Text(`${title}\n${shortcutHint}`, 0, 0);
+      }
+
+      const expandedBody = isPartial ? (timeline || body) : body;
+      return new Text(expandedBody ? `${title}\n${theme.fg(isPartial ? "muted" : "dim", expandedBody)}\n${shortcutHint}` : `${title}\n${shortcutHint}`, 0, 0);
+    },
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const settings = loadSettings(ctx.cwd);
       const maxToolCalls = settings.maxToolCalls ?? 50;
@@ -189,18 +242,36 @@ export default function(pi: ExtensionAPI) {
       });
 
       let assistantText = "";
+      const taskSummary = shortSummary(params.task);
       const toolTimeline: string[] = [];
+      let tokenInput = 0;
+      let tokenOutput = 0;
       let budgetAbort = false;
       const emitToolTimeline = () => {
-        if (!onUpdate || toolTimeline.length === 0) return;
+        if (!onUpdate) return;
+        const activity = toolTimeline.length > 0 ? toolTimeline.join("\n") : "Starting reconnaissance...";
         onUpdate({
-          content: [{ type: "text", text: `Scout tool activity:\n${toolTimeline.join("\n")}` }],
-          details: { outputPath, toolTimeline },
+          content: [
+            {
+              type: "text",
+              text: `Exploration with Pi-Scout — ${taskSummary} (${formatTokens(tokenInput, tokenOutput)})\n${activity}`,
+            },
+          ],
+          details: { outputPath, taskSummary, toolTimeline, toolCount: toolTimeline.length, tokens: { input: tokenInput, output: tokenOutput } },
         });
       };
+      emitToolTimeline();
       const unsubscribe = session.subscribe((event) => {
         if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
           assistantText += event.assistantMessageEvent.delta;
+        }
+        if (event.type === "message_end") {
+          const usage = messageUsage(event.message);
+          if (usage) {
+            tokenInput += usage.input;
+            tokenOutput += usage.output;
+            emitToolTimeline();
+          }
         }
         if (event.type === "tool_execution_start") {
           const n = toolTimeline.length + 1;
@@ -240,10 +311,17 @@ export default function(pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `pi_scout completed. Artifact: ${outputPath}\n\n${artifact}`,
+            text: `Exploration with Pi-Scout completed (${toolTimeline.length} tool use${toolTimeline.length === 1 ? "" : "s"}, ${formatTokens(tokenInput, tokenOutput)}). Artifact: ${outputPath}\n\n${artifact}`,
           },
         ],
-        details: { outputPath, bytes: Buffer.byteLength(artifact, "utf8") },
+        details: {
+          outputPath,
+          bytes: Buffer.byteLength(artifact, "utf8"),
+          taskSummary,
+          toolTimeline,
+          toolCount: toolTimeline.length,
+          tokens: { input: tokenInput, output: tokenOutput },
+        },
       };
     },
   });
