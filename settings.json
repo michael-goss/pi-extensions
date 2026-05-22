@@ -1,0 +1,20 @@
+{
+  "lastChangelogVersion": "0.75.4",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.5",
+  "defaultThinkingLevel": "low",
+  "terminal": {
+    "showTerminalProgress": false
+  },
+  "packages": [],
+  "skills": [
+    "~/.claude/skills"
+  ],
+  "piScout": {
+    "model": "openai-codex/gpt-5.4-mini",
+    "thinking": "medium",
+    "outputDir": ".pi/scout-runs",
+    "outputFilePrefix": "scout",
+    "maxToolCalls": 35
+  }
+}
