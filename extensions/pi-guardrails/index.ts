@@ -185,7 +185,7 @@ export default function(pi: ExtensionAPI) {
   pi.registerFlag("guardrails", { type: "string", description: "Initial guardrails Mode: PLAN, HITL, or AFK" });
 
   let config: GuardrailsConfig | undefined = loadConfig(process.cwd());
-  let mode: Mode = parseMode(pi.getFlag("guardrails")) ?? config.defaultMode ?? "PLAN";
+  let mode: Mode = parseMode(process.env.PI_GUARDRAILS) ?? parseMode(pi.getFlag("guardrails")) ?? config.defaultMode ?? "PLAN";
   let planAllowed: RegExp[] = [];
   let hitlDangerous: RegExp[] = [];
   let afkBlocked: RegExp[] = [];
@@ -220,6 +220,12 @@ export default function(pi: ExtensionAPI) {
   pi.on("session_start", (event, ctx) => {
     config = loadConfig(ctx.cwd);
     refreshCompiled();
+    const rawEnvMode = process.env.PI_GUARDRAILS;
+    const envMode = parseMode(rawEnvMode);
+    if (typeof rawEnvMode === "string" && rawEnvMode && !envMode) {
+      warn(`Invalid PI_GUARDRAILS value: ${rawEnvMode}; using configured/default Mode`);
+      ctx.ui.notify(`Invalid PI_GUARDRAILS value: ${rawEnvMode}; using Mode: ${config.defaultMode}`, "warning");
+    }
     const rawFlagMode = pi.getFlag("guardrails");
     const flagMode = parseMode(rawFlagMode);
     if (typeof rawFlagMode === "string" && rawFlagMode && !flagMode) {
@@ -227,12 +233,12 @@ export default function(pi: ExtensionAPI) {
       ctx.ui.notify(`Invalid --guardrails value: ${rawFlagMode}; using Mode: ${config.defaultMode}`, "warning");
     }
     if (event.reason === "startup") {
-      mode = flagMode ?? config.defaultMode ?? "PLAN";
+      mode = envMode ?? flagMode ?? config.defaultMode ?? "PLAN";
     } else {
       // /new, /resume, /fork, and /reload rebuild the extension runtime inside
       // the same Pi process. Preserve the user's current Mode across those
       // session replacements; only a fresh Pi startup resets to the default.
-      mode = processState().mode ?? flagMode ?? config.defaultMode ?? "PLAN";
+      mode = processState().mode ?? envMode ?? flagMode ?? config.defaultMode ?? "PLAN";
     }
     processState().mode = mode;
     setStatus(ctx);

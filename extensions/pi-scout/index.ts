@@ -172,13 +172,8 @@ export default function(pi: ExtensionAPI) {
       scope: Type.Optional(Type.Array(Type.String(), { description: "Optional paths, modules, symbols, or areas to prioritize." })),
       outputDir: Type.Optional(Type.String({ description: "Override artifact directory. Relative paths resolve against cwd." })),
     }),
-    renderCall(args, theme, _context) {
-      const task = typeof args.task === "string" ? shortSummary(args.task) : "reconnaissance";
-      return new Text(
-        `${theme.fg("toolTitle", theme.bold("Starting Pi-Scout"))}${theme.fg("muted", ` — ${task}`)}`,
-        0,
-        0,
-      );
+    renderCall(_args, _theme, _context) {
+      return new Text("", 0, 0);
     },
     renderResult(result, { expanded, isPartial }, theme, _context) {
       const details = result.details as any;
